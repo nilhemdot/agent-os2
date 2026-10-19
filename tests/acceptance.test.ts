@@ -296,7 +296,7 @@ describe("workspaces, budgets, review", () => {
   it("AC-F3-1.1 AC-F3-1.2 AC-F3-3.1 two attempts get two worktrees and release them", async () => {
     const stay = join(tmpdir(), `stay-${Date.now()}.json`);
     writeFileSync(stay, JSON.stringify({ stayAliveMs: 20000, steps: [{ kind: "text", text: "working" }] }));
-    const session = await boot({ scenario: stay });
+    const session = await boot({ scenario: stay, config: { attempts: { cancel_grace_s: 1 } } });
     const repo = initRepo();
     await session.api("POST", "/repos", { path: repo, test_command: "node test.mjs" });
     const mission = await session.api("POST", "/missions", { title: "csv export", repo, budget: "3" });

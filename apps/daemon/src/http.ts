@@ -188,7 +188,18 @@ async function dispatch(plane: ControlPlane, method: string, parts: string[], ur
     if (!profile) throw new AgentError("not_found", "Profile not found", 404);
     return { status: 200, body: profile };
   }
-  if (head === "profiles" && a && method === "PATCH") return { status: 200, body: plane.updateProfile(decodeURIComponent(a), body) };
+  if (head === "profiles" && a && method === "PATCH") {
+    return {
+      status: 200,
+      body: plane.updateProfile(decodeURIComponent(a), {
+        model: body.model,
+        tools: body.tools,
+        overlay: body.overlay,
+        budget: body.budget,
+        allowUngated: body.allow_ungated,
+      }),
+    };
+  }
   if (head === "missions" && method === "GET" && !a) return { status: 200, body: { missions: plane.listMissions() } };
   if (head === "missions" && method === "POST" && !a) {
     return { status: 201, body: plane.createMission({ title: body.title, repo: body.repo, budget: body.budget, criteria: body.criteria, objective: body.objective }) };
@@ -225,9 +236,8 @@ async function dispatch(plane: ControlPlane, method: string, parts: string[], ur
     return { status: 200, body: { path: plane.exportEvidence(a, out, Boolean(body.redact)) } };
   }
   if (head === "approvals" && method === "GET" && !a) {
-    const rows = plane.listApprovals(url.searchParams.get("pending") === "1");
     const reveal = url.searchParams.get("reveal");
-    return { status: 200, body: { approvals: reveal ? rows.map((row) => (row.id === reveal ? plane.approvalView(row, true) : row)) : rows } };
+    return { status: 200, body: { approvals: plane.listApprovals(url.searchParams.get("pending") === "1", reveal) } };
   }
   if (head === "approvals" && a && b === "allow" && method === "POST") {
     return { status: 200, body: plane.decideApproval(a, "allow", { actor: body.actor || "user", forAttempt: Boolean(body.for_attempt), reason: body.reason }) };
@@ -300,7 +310,11 @@ function serveStatic(req: IncomingMessage, res: ServerResponse, webRoot: string,
 function send(res: ServerResponse, status: number, body: unknown): void {
   if (res.headersSent || res.writableEnded) return;
   const json = JSON.stringify(body);
-  res.writeHead(status, { "content-type": "application/json; charset=utf-8", "content-length": Buffer.byteLength(json) });
+  res.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "content-length": Buffer.byteLength(json),
+    connection: "close",
+  });
   res.end(json);
 }
 

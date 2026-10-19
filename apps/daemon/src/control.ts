@@ -108,8 +108,8 @@ export class ControlPlane {
   private bypassAt = new Map<string, number>();
   private children = new Map<string, RuntimeChild>();
   private codexWaiters = new Map<string, Map<number, (decision: "accept" | "decline" | "cancel") => void>>();
-  private approvalWaiters = new Map<string, (result: { effect: "allow" | "deny"; reason: string }) => void>();
-  private sse: { id: number; res: import("node:http").ServerResponse; missionId?: string; attemptId?: string; last: number; queued: number }[] = [];
+  private approvalWaiters = new Map<string, ((result: { effect: "allow" | "deny" | "cancel"; reason: string }) => void)[]>();
+  private sse: { id: number; res: import("node:http").ServerResponse; missionId?: string; attemptId?: string; last: number; queued: number; quietAt: number }[] = [];
   private sseSeq = 1;
   private pendingSse: SqlRow[] = [];
   private inTx = false;
@@ -137,13 +137,23 @@ export class ControlPlane {
       mkdirSync(join(opts.home, dir), { recursive: true, mode: 0o700 });
     }
     const dbPath = join(opts.home, "agentos.db");
-    const db = new DatabaseSync(dbPath);
-    db.exec("PRAGMA foreign_keys = ON");
-    db.exec("PRAGMA busy_timeout = 5000");
-    db.exec("PRAGMA journal_mode = WAL");
-    const quick = db.prepare("PRAGMA quick_check").get() as { quick_check: string };
-    if (quick.quick_check !== "ok") {
-      throw new AgentError("db_corrupt", `Database failed PRAGMA quick_check (${quick.quick_check}). Restore the latest backup in ${opts.home}.`, 1);
+    let db: DatabaseSync;
+    try {
+      db = new DatabaseSync(dbPath);
+      db.exec("PRAGMA foreign_keys = ON");
+      db.exec("PRAGMA busy_timeout = 5000");
+      db.exec("PRAGMA journal_mode = WAL");
+      const quick = db.prepare("PRAGMA quick_check").get() as { quick_check: string };
+      if (quick.quick_check !== "ok") {
+        throw new AgentError("db_corrupt", `Database failed PRAGMA quick_check (${quick.quick_check}). Restore the latest backup in ${opts.home}.`, 1);
+      }
+    } catch (error) {
+      if (error instanceof AgentError) throw error;
+      throw new AgentError(
+        "db_corrupt",
+        `Database failed to open (${error instanceof Error ? error.message : error}). Restore the latest backup in ${opts.home}.`,
+        1,
+      );
     }
     const plane = new ControlPlane(opts, db);
     applyMigrations(db, MIGRATIONS, {
@@ -182,7 +192,7 @@ export class ControlPlane {
 
   close(): void {
     this.closed = true;
-    for (const waiter of this.approvalWaiters.values()) waiter({ effect: "deny", reason: "daemon stopped" });
+    for (const waiters of this.approvalWaiters.values()) for (const waiter of waiters) waiter({ effect: "deny", reason: "daemon stopped" });
     this.approvalWaiters.clear();
     try {
       this.db.close();
@@ -407,6 +417,7 @@ export class ControlPlane {
         }
         this.writeSse(client, "message", String(row.id), data);
         client.last = row.id;
+        client.quietAt = this.clock.now();
       }
     }
   }
@@ -428,10 +439,11 @@ export class ControlPlane {
       return;
     }
     res.writeHead(200, sseHeaders());
-    const client = { id: this.sseSeq++, res, missionId: opts.missionId, attemptId: opts.attemptId, last, queued: 0 };
+    const client = { id: this.sseSeq++, res, missionId: opts.missionId, attemptId: opts.attemptId, last, queued: 0, quietAt: this.clock.now() };
     for (const row of rows) {
       this.writeSse(client, "message", String(row.id), JSON.stringify(publicEvent(row, false)));
       client.last = row.id;
+      client.quietAt = this.clock.now();
     }
     this.sse.push(client);
     res.on("close", () => {
@@ -485,8 +497,7 @@ export class ControlPlane {
         this.emit("approval.expired", { attemptId: approval.attempt_id, missionId: attempt?.mission_id, taskId: attempt?.task_id, actor: "daemon" }, { id: approval.id });
         if (attempt && attempt.state === "waiting_approval") this.setAttempt(attempt.id, "running");
       });
-      this.approvalWaiters.get(approval.id)?.({ effect: "deny", reason: "approval timed out" });
-      this.approvalWaiters.delete(approval.id);
+      this.releaseApproval(approval.id, { effect: "deny", reason: "approval timed out" });
     }
   }
 
@@ -534,7 +545,17 @@ export class ControlPlane {
   }
 
   pulseSse(): void {
-    for (const client of this.sse) client.res.write(`: heartbeat ${this.nowIso()}\n\n`);
+    const idleMs = this.config.events.sse_heartbeat_s * 1000;
+    const now = this.clock.now();
+    for (const client of [...this.sse]) {
+      if (now - client.quietAt < idleMs) continue;
+      try {
+        client.res.write(`: heartbeat ${this.nowIso()}\n\n`);
+        client.quietAt = now;
+      } catch {
+        this.sse = this.sse.filter((item) => item !== client);
+      }
+    }
   }
 
   private purgeIdempotency(): void {
@@ -630,6 +651,8 @@ export class ControlPlane {
       display_state: display,
       budget_usd: mission.budget_nusd == null ? null : mission.budget_nusd / NANO_PER_USD,
       spent_usd: mission.spent_nusd / NANO_PER_USD,
+      budget_note:
+        "Spend is often known only when an attempt ends. Claude Code's own --max-budget-usd flag is the primary in-flight guard. For Codex without incremental usage, the budget is enforced after each turn.",
     };
   }
 
@@ -931,7 +954,7 @@ export class ControlPlane {
     const running = Number(this.one("SELECT COUNT(*) AS n FROM attempts WHERE state IN ('starting','running','waiting_approval')")?.n ?? 0);
     const room = this.config.daemon.max_running_attempts - running;
     if (room <= 0) return;
-    const queued = this.all("SELECT id FROM attempts WHERE state = 'queued' ORDER BY created_at ASC LIMIT ?", room);
+    const queued = this.all("SELECT id FROM attempts WHERE state = 'queued' ORDER BY created_at ASC, id ASC LIMIT ?", room);
     for (const row of queued) {
       this.tx(() => this.setAttempt(row.id, "starting"));
       await this.launch(row.id);
@@ -1040,6 +1063,7 @@ export class ControlPlane {
       stdio: ["pipe", out, err],
       env: runtimeEnv(input.attempt.gate_token, this.config.runtimes["claude-code"].scenario),
     });
+    guardChild(child);
     child.stdin?.write(readFileSync(input.promptPath));
     child.stdin?.end();
     child.unref();
@@ -1073,10 +1097,11 @@ export class ControlPlane {
       stdio: ["pipe", "pipe", "pipe"],
       env: runtimeEnv(input.attempt.gate_token, scenario),
     });
+    guardChild(child);
     const stderr: Buffer[] = [];
     child.stderr?.on("data", (chunk) => {
       stderr.push(Buffer.from(chunk));
-      appendFileSync(input.stderrPath, chunk);
+      appendLog(input.stderrPath, chunk);
     });
     const exited = new Promise<number>((resolveExit) => {
       child.once("exit", (code) => resolveExit(code ?? 1));
@@ -1087,7 +1112,8 @@ export class ControlPlane {
         clearTimeout(timer);
         resolveReady(false);
       });
-      child.stdout?.once("data", () => {
+      child.stdout?.once("data", (chunk) => {
+        appendLog(input.logPath, chunk);
         clearTimeout(timer);
         resolveReady(true);
       });
@@ -1134,7 +1160,7 @@ export class ControlPlane {
     let buffer = "";
     child.stdout?.on("data", (chunk) => {
       buffer += chunk.toString("utf8");
-      appendFileSync(input.logPath, chunk);
+      appendLog(input.logPath, chunk);
       this.ingest(input.attempt.id);
       let nl = buffer.indexOf("\n");
       while (nl >= 0) {
@@ -1154,6 +1180,7 @@ export class ControlPlane {
       stdio: ["pipe", "pipe", "pipe"],
       env: runtimeEnv(input.attempt.gate_token, this.config.runtimes.codex.scenario),
     });
+    guardChild(child);
     child.stdin?.end();
     this.children.set(input.attempt.id, { child, kind: "codex" });
     const ident = processIdentity(child.pid ?? 0);
@@ -1168,7 +1195,7 @@ export class ControlPlane {
       );
       this.emit("attempt.started", { missionId: input.mission.id, taskId: input.task.id, attemptId: input.attempt.id, actor: "adapter:codex" }, { gated: "none" });
     });
-    child.stdout?.on("data", (chunk) => appendFileSync(input.logPath, chunk));
+    child.stdout?.on("data", (chunk) => appendLog(input.logPath, chunk));
     child.on("exit", (code, signal) => void this.onRuntimeExit(input.attempt.id, code, signal));
     child.unref();
   }
@@ -1261,7 +1288,10 @@ export class ControlPlane {
     }
     if (type === "attempt.result") {
       this.lastResult.set(attempt.id, { subtype: payload.subtype, usage: payload.usage, total_cost_usd: payload.total_cost_usd });
-      if (payload.usage || payload.total_cost_usd != null) this.recordUsage(attempt, payload.usage, payload.total_cost_usd, payload.estimated ? "estimated" : "runtime_reported");
+      if (payload.total_cost_usd != null) this.recordUsage(attempt, payload.usage, payload.total_cost_usd, "runtime_reported");
+      else if (payload.usage && !this.one("SELECT id FROM usage WHERE attempt_id = ?", attempt.id)) {
+        this.recordUsage(attempt, payload.usage, null, payload.estimated ? "estimated" : "runtime_reported");
+      }
     }
     if (type === "usage.recorded" && payload.usage) {
       this.recordUsage(attempt, payload.usage, null, payload.estimated ? "estimated" : "runtime_reported");
@@ -1300,6 +1330,22 @@ export class ControlPlane {
       this.emit("usage.recorded", { attemptId: attempt.id, taskId: attempt.task_id, actor: "daemon" }, { cost_nusd: cost, cost_source: costSource });
     });
     this.enforceBudget(attempt.task_id);
+    this.enforceAttemptBudget(attempt.id);
+  }
+
+  private enforceAttemptBudget(attemptId: string): void {
+    const attempt = this.attempt(attemptId);
+    if (!attempt || ["succeeded", "failed", "cancelled", "lost", "budget_stopped"].includes(attempt.state)) return;
+    const profile = JSON.parse(attempt.profile_snapshot || "{}");
+    if (profile.attempt_budget_nusd == null) return;
+    const row = this.one(
+      "SELECT COALESCE(SUM(CASE WHEN cost_nusd IS NULL OR cost_source = 'unknown' THEN 0 ELSE cost_nusd END),0) AS n, SUM(CASE WHEN cost_nusd IS NULL OR cost_source = 'unknown' THEN 1 ELSE 0 END) AS unknown FROM usage WHERE attempt_id = ?",
+      attemptId,
+    );
+    if (Number(row?.unknown ?? 0) > 0 || Number(row?.n ?? 0) < Number(profile.attempt_budget_nusd)) return;
+    this.run("UPDATE attempts SET end_reason = 'budget' WHERE id = ? AND end_reason IS NULL", attemptId);
+    this.finishAttempt(attemptId, "budget_stopped", "budget", null, null);
+    if (attempt.pid) void cancelProcess(Number(attempt.pid), this.config.attempts.cancel_grace_s * 1000);
   }
 
   private priceUsage(model: string | null, usage: any): { cost: number | null; source: string } {
@@ -1474,9 +1520,20 @@ export class ControlPlane {
       approval = this.one("SELECT * FROM approvals WHERE id = ?", id);
       this.notifyDesktop(approval!);
     }
-    const result = await new Promise<{ effect: "allow" | "deny"; reason: string }>((resolveWait) => {
-      this.approvalWaiters.set(approval!.id, resolveWait);
+    const result = await new Promise<{ effect: "allow" | "deny" | "cancel"; reason: string }>((resolveWait) => {
+      const waiting = this.approvalWaiters.get(approval!.id) ?? [];
+      waiting.push(resolveWait);
+      this.approvalWaiters.set(approval!.id, waiting);
     });
+    if (result.effect === "cancel") {
+      return {
+        effect: "cancel",
+        matchedRuleIds: decision.matchedRuleIds,
+        policyHash: decision.policyHash,
+        sourceLayers: decision.sourceLayers,
+        reason: result.reason,
+      };
+    }
     const finalDecision: Decision = {
       effect: result.effect,
       matchedRuleIds: decision.matchedRuleIds,
@@ -1527,6 +1584,12 @@ export class ControlPlane {
     return layerPolicies(layers);
   }
 
+  private releaseApproval(id: string, result: { effect: "allow" | "deny" | "cancel"; reason: string }): void {
+    const waiting = this.approvalWaiters.get(id) ?? [];
+    this.approvalWaiters.delete(id);
+    for (const waiter of waiting) waiter(result);
+  }
+
   decideApproval(id: string, effect: "allow" | "deny", opts: { reason?: string; actor?: string; forAttempt?: boolean } = {}): SqlRow {
     const approval = this.one("SELECT * FROM approvals WHERE id = ?", id);
     if (!approval) throw new AgentError("not_found", "Approval not found", 404);
@@ -1558,14 +1621,13 @@ export class ControlPlane {
       throw new AgentError("already_decided", `Approval already ${current.state}`, 409, { state: current.state });
     }
     const reason = effect === "deny" ? opts.reason || "Denied by user" : "Allowed by user";
-    this.approvalWaiters.get(id)?.({ effect: effect === "allow" ? "allow" : "deny", reason });
-    this.approvalWaiters.delete(id);
+    this.releaseApproval(id, { effect: effect === "allow" ? "allow" : "deny", reason });
     return this.one("SELECT * FROM approvals WHERE id = ?", id)!;
   }
 
-  listApprovals(pendingOnly = false): SqlRow[] {
+  listApprovals(pendingOnly = false, revealId?: string | null): SqlRow[] {
     const rows = this.all(`SELECT * FROM approvals ${pendingOnly ? "WHERE state = 'pending'" : ""} ORDER BY created_at DESC`);
-    return rows.map((row) => this.approvalView(row, false));
+    return rows.map((row) => this.approvalView(row, Boolean(revealId) && row.id === revealId));
   }
 
   approvalView(row: SqlRow, reveal: boolean): SqlRow {
@@ -1597,6 +1659,8 @@ export class ControlPlane {
       return this.attemptView(id);
     }
     const child = this.children.get(id);
+    this.finishAttempt(id, terminal, reason, null, null);
+    await delay(100);
     if (terminal === "cancelled" && child?.kind === "codex") {
       try {
         child.child.stdin?.write(`${JSON.stringify({ jsonrpc: "2.0", id: 99, method: "turn/interrupt", params: {} })}\n`);
@@ -1605,7 +1669,6 @@ export class ControlPlane {
       }
     }
     if (attempt.pid) await cancelProcess(Number(attempt.pid), this.config.attempts.cancel_grace_s * 1000);
-    this.finishAttempt(id, terminal, reason, null, null);
     return this.attemptView(id);
   }
 
@@ -1640,7 +1703,7 @@ export class ControlPlane {
     }
     const result = this.lastResult.get(attemptId);
     const subtype = result?.subtype ?? null;
-    if (!result && code == null && signal == null) {
+    if (!result && ((code == null && signal == null) || signal === "SIGKILL")) {
       this.finishAttempt(attemptId, "lost", "process gone", code, signal);
       this.emit("attempt.lost", { attemptId, taskId: attempt.task_id, actor: "daemon" }, { reason: "process gone" });
       return;
@@ -1678,8 +1741,10 @@ export class ControlPlane {
       }
       this.run("UPDATE approvals SET state = 'cancelled' WHERE attempt_id = ? AND state = 'pending'", id);
       for (const approval of this.all("SELECT id FROM approvals WHERE attempt_id = ? AND state = 'cancelled'", id)) {
-        this.approvalWaiters.get(approval.id)?.({ effect: "deny", reason: "attempt cancelled" });
-        this.approvalWaiters.delete(approval.id);
+        this.releaseApproval(approval.id, {
+          effect: terminal === "cancelled" ? "cancel" : "deny",
+          reason: terminal === "cancelled" ? "attempt cancelled" : "attempt ended",
+        });
         this.emit("approval.cancelled", { attemptId: id, taskId: task.id, missionId: task.mission_id, actor: "daemon" }, { id: approval.id });
       }
       if (attempt.workspace_id) this.releaseWorkspaceRow(attempt.workspace_id);
@@ -1851,11 +1916,19 @@ export class ControlPlane {
   }
 
   private costLabel(attemptId: string): string {
+    const attempt = this.attempt(attemptId);
     const rows = this.all("SELECT cost_nusd, cost_source FROM usage WHERE attempt_id = ?", attemptId);
-    if (!rows.length) return "cost so far: not reported yet";
+    if (!rows.length) {
+      return attempt && ["succeeded", "failed", "cancelled", "lost", "budget_stopped"].includes(attempt.state) ? "unknown" : "cost so far: not reported yet";
+    }
     if (rows.some((row) => row.cost_source === "unknown" || row.cost_nusd == null)) return "unknown";
     const total = rows.reduce((sum, row) => sum + Number(row.cost_nusd), 0);
-    const source = rows.some((row) => row.cost_source === "estimated") ? "estimated" : "reported by runtime (its own estimate)";
+    const estimated = rows.some((row) => row.cost_source === "estimated");
+    const source = estimated
+      ? "estimated"
+      : attempt?.runtime === "claude-code"
+        ? "reported by Claude Code (its own estimate)"
+        : "reported by runtime (its own estimate)";
     return `${(total / NANO_PER_USD).toFixed(6)} USD (${source})`;
   }
 
@@ -1949,6 +2022,7 @@ export class ControlPlane {
       cost: this.costLabel(id),
       tokens: this.tokenTotals(id),
       evidence: this.all("SELECT id, kind, label, size_bytes, sha256, created_at, meta FROM evidence WHERE attempt_id = ?", id),
+      merge_commands: attempt.review_state === "accepted" && workspace ? [`git merge --no-ff ${workspace.branch}`] : [],
     };
   }
 
@@ -2031,11 +2105,31 @@ export class ControlPlane {
     const cutoff = this.clock.now() - (opts.olderThanMs ?? 14 * 24 * 60 * 60 * 1000);
     const candidates = this.all("SELECT * FROM workspaces WHERE state = 'released'").filter((row) => Date.parse(row.released_at ?? row.created_at) <= cutoff);
     const listed = candidates.map((row) => ({ id: row.id, path: row.path, bytes: existsSync(row.path) ? dirSize(row.path) : 0 }));
+    const sizes = {
+      blobs_bytes: dirSize(join(this.home, "blobs")),
+      logs_bytes: dirSize(join(this.home, "logs")),
+      worktrees_bytes: dirSize(join(this.home, "worktrees")),
+      top_missions: this.topMissionsBySize(),
+    };
     if (opts.dryRun || !opts.yes) {
-      return { removed: [], would_remove: listed, blobs_bytes: dirSize(join(this.home, "blobs")), logs_bytes: dirSize(join(this.home, "logs")), worktrees_bytes: dirSize(join(this.home, "worktrees")) };
+      return { removed: [], would_remove: listed, ...sizes };
     }
     for (const row of candidates) this.removeWorkspace(row.id, { force: true });
-    return { removed: listed };
+    this.run("DELETE FROM events WHERE mission_id IN (SELECT id FROM missions WHERE archived_at IS NOT NULL)");
+    return { removed: listed, ...sizes };
+  }
+
+  private topMissionsBySize(): { id: string; title: string; bytes: number }[] {
+    return this.all(
+      `SELECT m.id, m.title,
+         (SELECT COALESCE(SUM(e.size_bytes), 0) FROM evidence e
+            JOIN attempts a ON a.id = e.attempt_id
+            JOIN tasks t ON t.id = a.task_id
+            WHERE t.mission_id = m.id) AS bytes
+       FROM missions m
+       ORDER BY bytes DESC
+       LIMIT 10`,
+    ).map((row) => ({ id: row.id, title: row.title, bytes: Number(row.bytes) }));
   }
 
   evidenceList(attemptId: string): SqlRow {
@@ -2062,9 +2156,10 @@ export class ControlPlane {
       diffstat: "diffstat.txt",
     };
     const manifest: { name: string; sha256: string }[] = [];
+    const used = new Set<string>();
     const items = this.all("SELECT * FROM evidence WHERE attempt_id = ?", attemptId);
     for (const item of items) {
-      const name = names[item.kind] ?? item.label;
+      const name = exportName(names[item.kind] ?? String(item.label || item.kind), used);
       let body = readFileSync(join(this.home, "blobs", item.sha256.slice(0, 2), item.sha256));
       if (redact && (item.media_type.startsWith("text") || name.endsWith(".md") || name.endsWith(".log") || name.endsWith(".jsonl"))) {
         body = Buffer.from(maskSecrets(body.toString("utf8")));
@@ -2391,8 +2486,8 @@ function defaultConfig() {
     attempts: { idle_warning_s: 600, cancel_grace_s: 10, gate_bypass_ms: 2000 },
     budget: { warning_ratio: 0.8 },
     events: { raw_inline_max_bytes: 65536, sse_heartbeat_s: 15 },
-    ui: { open_browser_on_start: false },
-    notifications: { desktop: false },
+    ui: { open_browser_on_start: true },
+    notifications: { desktop: true },
     runtimes: {
       "claude-code": { command: ["claude"] as string[], scenario: undefined as string | undefined },
       codex: { command: ["codex"] as string[], scenario: undefined as string | undefined },
@@ -2447,22 +2542,48 @@ function processIdentity(pid: number): { alive: boolean; startTime: string | nul
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     const rest = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
-    return { alive: true, startTime: rest[19] ?? null };
+    const state = rest[0] ?? "";
+    return { alive: state !== "Z" && state !== "X", startTime: rest[19] ?? null };
   } catch {
     return { alive: false, startTime: null };
   }
 }
 
+function guardChild(child: ChildProcess): void {
+  const swallow = () => undefined;
+  child.on("error", swallow);
+  child.stdin?.on("error", swallow);
+  child.stdout?.on("error", swallow);
+  child.stderr?.on("error", swallow);
+}
+
+function processGroupId(pid: number): number | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const rest = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+    const group = Number(rest[2]);
+    return Number.isInteger(group) ? group : null;
+  } catch {
+    return null;
+  }
+}
+
 async function cancelProcess(pid: number, graceMs: number): Promise<void> {
   const signal = (sig: NodeJS.Signals) => {
-    try {
-      process.kill(-pid, sig);
-    } catch {
+    const group = processGroupId(pid);
+    const mine = processGroupId(process.pid);
+    if (group != null && group === pid && group !== mine && group !== process.pid) {
       try {
-        process.kill(pid, sig);
+        process.kill(-pid, sig);
+        return;
       } catch {
-        // already gone
+        // fall through to the single pid
       }
+    }
+    try {
+      process.kill(pid, sig);
+    } catch {
+      // already gone
     }
   };
   signal("SIGINT");
@@ -2490,6 +2611,7 @@ function runShell(command: string, cwd: string, timeoutMs: number, allow: string
   for (const key of allow) if (process.env[key]) env[key] = process.env[key];
   return new Promise((resolvePromise) => {
     const child = spawn("bash", ["-lc", command], { cwd, env });
+    guardChild(child);
     const chunks: Buffer[] = [];
     child.stdout.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
     child.stderr.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
@@ -2574,6 +2696,28 @@ function readdirSafe(dir: string): string[] {
 
 function repoRoot(): string {
   return new URL("../../../", import.meta.url).pathname;
+}
+
+function exportName(raw: string, used: Set<string>): string {
+  const clean = raw.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "") || "evidence";
+  const base = clean === "manifest.json" ? "evidence_manifest.json" : clean;
+  let name = base;
+  let n = 2;
+  while (used.has(name)) {
+    const dot = base.lastIndexOf(".");
+    name = dot > 0 ? `${base.slice(0, dot)}_${n}${base.slice(dot)}` : `${base}_${n}`;
+    n += 1;
+  }
+  used.add(name);
+  return name;
+}
+
+function appendLog(path: string, chunk: Buffer | string): void {
+  try {
+    appendFileSync(path, chunk);
+  } catch {
+    // shutdown can remove the attempt directory before a late stdout chunk arrives
+  }
 }
 
 function delay(ms: number): Promise<void> {

@@ -2,7 +2,7 @@
 // Scripted Claude Code stand-in. Speaks the flag set and hook shape AgentOS uses.
 // Live Claude Code behavior is NOT verified here.
 import { readFileSync, writeFileSync, existsSync, writeSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 const args = process.argv.slice(2);
 const scenarioPath = process.env.AGENTOS_FAKE_SCENARIO || "";
@@ -30,6 +30,11 @@ const settingsPath = flag("--settings");
 const model = flag("--model");
 const budget = flag("--max-budget-usd");
 const script = scenario();
+try {
+  writeFileSync(join(process.cwd(), ".agentos-argv.json"), JSON.stringify(args));
+} catch {
+  // version checks run outside a worktree
+}
 
 function emit(obj) {
   writeSync(1, `${JSON.stringify(obj)}\n`);

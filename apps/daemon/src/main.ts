@@ -98,6 +98,7 @@ async function serve(dataHome: string): Promise<void> {
   const launch = plane.issueLaunchCode();
   const url = launch.url.replace(/:(\d+)/, `:${port}`);
   writeFileSync(join(dataHome, "daemon.ready"), JSON.stringify({ pid: process.pid, port, url }), { mode: 0o600 });
+  if (plane.config.ui.open_browser_on_start) openBrowser(url);
   process.stdout.write(`${url}\n`);
   const stop = (kill: boolean) => {
     plane.accepting = false;
@@ -141,6 +142,13 @@ function fail(dataHome: string, error: unknown): void {
   }
   process.stderr.write(`${body.code}: ${body.message}\n`);
   process.exit(1);
+}
+
+function openBrowser(url: string): void {
+  const command = process.platform === "darwin" ? "open" : "xdg-open";
+  const child = spawn(command, [url], { detached: true, stdio: "ignore" });
+  child.on("error", () => undefined);
+  child.unref();
 }
 
 function readPid(file: string): number | null {

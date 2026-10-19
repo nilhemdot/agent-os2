@@ -176,15 +176,12 @@ export function worktreeDirty(path: string): boolean {
 
 export function mergeTreeConflicts(repo: string, base: string, branch: string): string[] {
   try {
-    const out = execFileSync("git", ["merge-tree", "--write-tree", "--name-only", base, branch], {
+    execFileSync("git", ["merge-tree", "--write-tree", "--name-only", base, branch], {
       cwd: repo,
       encoding: "utf8",
       maxBuffer: 8 * 1024 * 1024,
     });
-    return out
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line && !line.startsWith("tree "));
+    return [];
   } catch (error) {
     const stdout = (error as { stdout?: string | Buffer }).stdout?.toString() ?? "";
     const lines = stdout

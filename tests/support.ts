@@ -37,25 +37,49 @@ export async function boot(opts: { scenario?: string; codexScenario?: string; co
   });
   const server = createHttpServer(plane);
   await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => resolve());
+    const onError = (error: Error) => reject(error);
+    server.once("error", onError);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", onError);
+      server.on("error", (error) => plane.log(`http ${error instanceof Error ? error.message : error}`));
+      resolve();
+    });
+  });
+  server.on("clientError", (_error, socket) => {
+    socket.destroy();
   });
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : 0;
   plane.port = port;
   const token = plane.token();
   const api = async (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) => {
-    const response = await fetch(`http://127.0.0.1:${port}${path}`, {
-      method,
-      headers: {
-        authorization: `Bearer ${token}`,
-        ...(body !== undefined ? { "content-type": "application/json" } : {}),
-        ...headers,
-      },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
-    const text = await response.text();
-    return { status: response.status, body: text ? JSON.parse(text) : {}, headers: response.headers };
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+          method,
+          headers: {
+            authorization: `Bearer ${token}`,
+            connection: "close",
+            ...(body !== undefined ? { "content-type": "application/json" } : {}),
+            ...headers,
+          },
+          body: body !== undefined ? JSON.stringify(body) : undefined,
+        });
+        const text = await response.text();
+        return { status: response.status, body: text ? JSON.parse(text) : {}, headers: response.headers };
+      } catch (error) {
+        lastError = error;
+        const cause = (error as { cause?: { code?: string } }).cause?.code ?? "";
+        const message = error instanceof Error ? error.message : String(error);
+        if (attempt < 2 && (cause === "ECONNRESET" || cause === "ECONNREFUSED" || message.includes("fetch failed"))) {
+          await delay(40);
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw lastError;
   };
   return {
     plane,

@@ -96,6 +96,27 @@ export function parseCodexLine(line: string): { approval?: CodexApprovalRequest;
       },
     };
   }
+  const loose = body as { type?: string; subtype?: string; command?: string; gated?: boolean };
+  if (loose.type === "item.completed") {
+    return {
+      event: {
+        type: "tool.completed",
+        payload: { gated: loose.gated === false ? false : true, command: loose.command ?? null },
+        raw: body,
+        byteOffset: 0,
+      },
+    };
+  }
+  if (loose.type === "result") {
+    return {
+      event: {
+        type: "attempt.result",
+        payload: { subtype: loose.subtype ?? "success", estimated: true },
+        raw: body,
+        byteOffset: 0,
+      },
+    };
+  }
   if (body.method === "turn/usage") {
     return {
       event: {

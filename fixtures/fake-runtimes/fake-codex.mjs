@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Scripted Codex App Server stand-in (JSON-RPC over stdio).
 // Live Codex behavior is NOT verified here.
-import { existsSync, readFileSync, writeSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeSync } from "node:fs";
+import { join } from "node:path";
 import readline from "node:readline";
 
 const args = process.argv.slice(2);
@@ -17,18 +18,27 @@ if (args.includes("--version")) {
 }
 
 const script = scenario();
-if (script.appServer === false || args.includes("--no-app-server")) {
+const jsonl = args.includes("--jsonl") || script.mode === "jsonl";
+if (!jsonl && (script.appServer === false || args.includes("--no-app-server"))) {
   process.stderr.write("codex app server unavailable\n");
   process.exit(2);
 }
-
-const jsonl = args.includes("--jsonl") || script.mode === "jsonl";
 const rl = readline.createInterface({ input: process.stdin });
 const pending = new Map();
 let threadId = "thread-fake";
 
+const stdinLog = join(process.cwd(), ".agentos-codex-stdin.jsonl");
+
 function send(message) {
   writeSync(1, `${JSON.stringify(message)}\n`);
+}
+
+function note(line) {
+  try {
+    appendFileSync(stdinLog, `${line}\n`);
+  } catch {
+    // the worktree may not be writable yet during --version
+  }
 }
 
 function reply(id, result) {
@@ -59,6 +69,17 @@ async function runTurn(prompt) {
           writeFileSync(path, edit.find != null ? current.replace(edit.find, edit.replace ?? "") : edit.content ?? "");
         }
       }
+    } else if (step.kind === "file") {
+      const id = 1000 + n++;
+      send({
+        jsonrpc: "2.0",
+        id,
+        method: "item/fileChange/requestApproval",
+        params: { threadId, turnId: "turn-1", itemId: `item-${id}`, paths: step.paths || [] },
+      });
+      await new Promise((resolvePromise) => pending.set(id, resolvePromise));
+    } else if (step.kind === "raw") {
+      send(step.message);
     } else if (step.kind === "ungated") {
       send({
         jsonrpc: "2.0",
@@ -96,6 +117,7 @@ if (jsonl) {
 } else {
   rl.on("line", (line) => {
     if (!line.trim()) return;
+    note(line);
     const msg = JSON.parse(line);
     if (msg.id && pending.has(msg.id)) {
       pending.get(msg.id)(msg.result?.decision || "decline");
