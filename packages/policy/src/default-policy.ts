@@ -1,0 +1,104 @@
+/** Shipped default policy. Edits inside a worktree are allowed by the resolver when no stricter rule matches. */
+export const DEFAULT_POLICY_YAML = `version: 1
+default: ask
+rules:
+  - id: default.deny.rm-rf
+    effect: deny
+    note: recursive force-delete, including spellings that hide behind a slash
+    match:
+      - Bash(rm -rf *)
+      - Bash(rm -fr *)
+      - Bash(rm -rf)
+      - Bash(rm --recursive --force *)
+      - Bash(rm --force --recursive *)
+  - id: default.deny.sudo
+    effect: deny
+    match:
+      - Bash(sudo *)
+      - Bash(sudo)
+  - id: default.deny.curl-shell
+    effect: deny
+    note: download piped into a shell
+    match:
+      - Bash(curl *|*)
+      - Bash(curl * | *)
+      - Bash(wget *|*)
+      - Bash(wget * | *)
+  - id: default.deny.sensitive-paths
+    effect: deny
+    match:
+      - Write(/etc/**)
+      - Edit(/etc/**)
+      - Write(~/.ssh/**)
+      - Edit(~/.ssh/**)
+      - Read(~/.ssh/**)
+      - Write(~/.aws/**)
+      - Edit(~/.aws/**)
+      - Read(~/.aws/**)
+      - Write(~/.config/gcloud/**)
+      - Edit(~/.config/gcloud/**)
+      - Read(~/.config/gcloud/**)
+  - id: default.deny.env-files
+    effect: deny
+    match:
+      - Write(**/.env)
+      - Write(**/.env.*)
+      - Edit(**/.env)
+      - Edit(**/.env.*)
+      - Read(**/.env)
+      - Read(**/.env.*)
+  - id: default.ask.install
+    effect: ask
+    match:
+      - Bash(npm install*)
+      - Bash(npm i *)
+      - Bash(pnpm install*)
+      - Bash(pnpm add*)
+      - Bash(yarn add*)
+      - Bash(pip install*)
+      - Bash(pip3 install*)
+      - Bash(cargo install*)
+  - id: default.ask.git-push
+    effect: ask
+    match:
+      - Bash(git push*)
+  - id: default.ask.git-commit
+    effect: ask
+    match:
+      - Bash(git commit*)
+  - id: default.ask.git-checkout
+    effect: ask
+    match:
+      - Bash(git checkout*)
+      - Bash(git switch*)
+  - id: default.ask.network
+    effect: ask
+    match:
+      - Bash(curl *)
+      - Bash(wget *)
+      - Bash(ssh *)
+      - Bash(scp *)
+      - Bash(nc *)
+  - id: default.allow.reads
+    effect: allow
+    match:
+      - Read(**)
+      - Grep(**)
+      - Glob(**)
+  - id: default.allow.git-readonly
+    effect: allow
+    match:
+      - Bash(git status*)
+      - Bash(git diff*)
+      - Bash(git log*)
+      - Bash(git show*)
+      - Bash(git branch*)
+  - id: default.allow.tests
+    effect: allow
+    match:
+      - Bash(npm test*)
+      - Bash(npm run test*)
+      - Bash(pnpm test*)
+      - Bash(pytest *)
+      - Bash(cargo test*)
+`;

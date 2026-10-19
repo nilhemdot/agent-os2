@@ -1,0 +1,18 @@
+{
+  "id": "02-write-note",
+  "title": "Write a note",
+  "objective": "Create NOTES.md with the word done.",
+  "budget": "1.00",
+  "test_command": "node -e \"process.exit(0)\"",
+  "task": "Write NOTES.md",
+  "criteria": ["file NOTES.md exists"],
+  "files": {
+    "README.md": "empty repo\n"
+  },
+  "scenario": {
+    "steps": [
+      { "kind": "tool", "name": "Write", "input": { "file_path": "NOTES.md" }, "apply": [{ "path": "NOTES.md", "content": "done\n" }] }
+    ]
+  },
+  "answers": {}
+}

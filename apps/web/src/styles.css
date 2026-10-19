@@ -1,0 +1,61 @@
+:root {
+  color-scheme: light;
+  --ink: #1c1915;
+  --muted: #5c564c;
+  --line: #e4dccf;
+  --paper: #f6f1e8;
+  --card: #fffaf3;
+  --rust: #9a3412;
+  --moss: #3f6212;
+  --amber: #b45309;
+  --deny: #9f1239;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink); }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+a { color: var(--rust); }
+
+.app { min-height: 100vh; display: flex; flex-direction: column; }
+.top {
+  display: flex; align-items: center; gap: 16px; padding: 14px 20px;
+  border-bottom: 1px solid var(--line); background: #efe7da;
+  position: sticky; top: 0; z-index: 2;
+}
+.brand { font-weight: 700; letter-spacing: 0.04em; text-decoration: none; color: var(--ink); }
+.brand small { display: block; font-weight: 400; color: var(--muted); letter-spacing: 0; font-size: 12px; }
+.nav { display: flex; gap: 12px; margin-left: auto; align-items: center; }
+.nav a { text-decoration: none; color: var(--ink); }
+.badge { background: var(--rust); color: white; border-radius: 999px; padding: 0 7px; font-family: ui-monospace, monospace; font-size: 12px; }
+.banner { background: #fde68a; color: #451a03; padding: 8px 20px; font-size: 14px; }
+.banner.warn { background: #fecaca; }
+.main { padding: 20px; max-width: 1100px; width: 100%; margin: 0 auto; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+table { width: 100%; border-collapse: collapse; font-size: 15px; }
+th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; }
+label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); flex: 1; min-width: 160px; }
+input, select, textarea { background: white; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+textarea { min-height: 70px; }
+.btn { background: var(--ink); color: white; border: 0; border-radius: 8px; padding: 8px 12px; }
+.btn.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.ok { color: var(--moss); } .bad { color: var(--deny); } .wait { color: var(--amber); }
+.tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+.tabs button[aria-selected="true"] { background: var(--ink); color: white; }
+pre { white-space: pre-wrap; background: #1c1915; color: #f6f1e8; padding: 12px; border-radius: 8px; overflow: auto; }
+.palette {
+  position: fixed; inset: 0; background: rgba(28, 25, 21, 0.35); display: grid; align-items: start; justify-content: center; padding-top: 12vh;
+}
+.palette form { width: min(560px, 92vw); background: white; border-radius: 12px; padding: 12px; box-shadow: 0 20px 50px rgba(0,0,0,.2); }
+.palette button { display: block; width: 100%; text-align: left; background: transparent; border: 0; padding: 8px; border-radius: 6px; }
+.palette button:hover, .palette button.active { background: #efe7da; }
+@media (max-width: 720px) {
+  .top { flex-wrap: wrap; }
+  .main { padding: 12px; }
+  table { display: block; overflow-x: auto; }
+}

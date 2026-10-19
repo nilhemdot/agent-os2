@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+test-results/
+playwright-report/
+*.db
+*.db-wal
+*.db-shm
+*.log
+.DS_Store
+apps/web/dist/
+test-results.json
+coverage-summary.json
+.agentos-dev/
+uploads/

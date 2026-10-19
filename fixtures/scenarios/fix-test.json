@@ -1,0 +1,19 @@
+{
+  "version": "2.1.295",
+  "steps": [
+    {
+      "kind": "tool",
+      "name": "Edit",
+      "input": { "file_path": "src/math.js" },
+      "apply": [{ "path": "src/math.js", "find": "return a - b", "replace": "return a + b" }]
+    },
+    {
+      "kind": "tool",
+      "name": "Bash",
+      "input": { "command": "echo ship it" }
+    }
+  ],
+  "resultSubtype": "success",
+  "total_cost_usd": 0.002,
+  "usage": { "input_tokens": 40, "output_tokens": 12, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0 }
+}

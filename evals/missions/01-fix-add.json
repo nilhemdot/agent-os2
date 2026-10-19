@@ -1,0 +1,21 @@
+{
+  "id": "01-fix-add",
+  "title": "Fix add",
+  "objective": "Make the add function return a sum.",
+  "budget": "1.00",
+  "test_command": "node test.mjs",
+  "task": "Fix add",
+  "criteria": ["file src/math.js exists"],
+  "files": {
+    "package.json": "{ \"type\": \"module\" }\n",
+    "src/math.js": "export function add(a, b) { return a - b; }\n",
+    "test.mjs": "import { add } from './src/math.js'; if (add(2, 3) !== 5) process.exit(1);\n"
+  },
+  "scenario": {
+    "steps": [
+      { "kind": "tool", "name": "Edit", "input": { "file_path": "src/math.js" }, "apply": [{ "path": "src/math.js", "find": "return a - b", "replace": "return a + b" }] },
+      { "kind": "tool", "name": "Bash", "input": { "command": "echo ship it" } }
+    ]
+  },
+  "answers": { "echo ship it": "allow" }
+}

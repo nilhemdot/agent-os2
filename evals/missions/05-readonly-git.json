@@ -1,0 +1,19 @@
+{
+  "id": "05-readonly-git",
+  "title": "Status then stamp",
+  "objective": "Read git status, then write STAMP.txt.",
+  "budget": "1.00",
+  "test_command": "node -e \"process.exit(0)\"",
+  "task": "Stamp the tree",
+  "criteria": ["file STAMP.txt exists"],
+  "files": {
+    "README.md": "tracked\n"
+  },
+  "scenario": {
+    "steps": [
+      { "kind": "tool", "name": "Bash", "input": { "command": "git status --short" } },
+      { "kind": "tool", "name": "Write", "input": { "file_path": "STAMP.txt" }, "apply": [{ "path": "STAMP.txt", "content": "stamped\n" }] }
+    ]
+  },
+  "answers": {}
+}
