@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,7 +54,7 @@ function openStream(url: string, token: string, headers: Record<string, string> 
 }
 
 describe("codex fake runtime", () => {
-  it("AC-F8-1.1 AC-F8-1.2 AC-F8-2.1 AC-F8-2.3 AC-F8-2.4 AC-F8-3.1 AC-F6-1.3 AC-F6-2.3 AC-F11-1.2 Codex is gated in the worktree and priced from the table", async () => {
+  it("AC-F8-1.1 AC-F8-1.2 AC-F8-2.1 AC-F8-2.3 AC-F8-2.4 AC-F8-3.1 AC-F6-1.3 AC-F6-2.3 AC-F5-1.4 AC-F11-1.2 Codex is gated in the worktree and priced from the table", async () => {
     const scenario = writeScenario({
       steps: [
         { kind: "command", command: "git status" },
@@ -108,6 +108,16 @@ describe("codex fake runtime", () => {
     const pgrp = Number(stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/)[2]);
     expect(pgrp).toBe(view.body.pid);
     const events = await session.api("GET", `/attempts/${started.body.id}/events?limit=100`);
+    const git = rows(session.plane, "SELECT effect FROM gate_decisions WHERE attempt_id = ? AND arg = ?", started.body.id, "git status");
+    expect(git.length).toBeGreaterThan(0);
+    expect(git.every((row) => row.effect === "allow")).toBe(true);
+    expect(rows(session.plane, "SELECT id FROM approvals WHERE attempt_id = ? AND preview = ?", started.body.id, "git status")).toHaveLength(0);
+    expect(
+      events.body.events.some(
+        (event: { type: string; payload: { effect?: string; tool?: string } }) =>
+          event.type === "tool.decided" && event.payload.effect === "allow" && event.payload.tool === "Bash",
+      ),
+    ).toBe(true);
     expect(events.body.events.some((event: { type: string; payload: { gated?: boolean } }) => event.type === "tool.completed" && event.payload.gated === false)).toBe(true);
     expect(events.body.events.some((event: { type: string }) => event.type === "adapter.unknown")).toBe(true);
     const decisions = stdin.filter((line) => line.result?.decision);
@@ -1095,6 +1105,235 @@ describe("daemon process and doctor", () => {
   });
 });
 
+describe("coverage still short of a live runtime", () => {
+  it("AC-F6-2.4 an adapter with no policy coverage is refused unless the profile is ungated", async () => {
+    const session = await boot();
+    const original = session.plane.capabilitiesFor;
+    session.plane.capabilitiesFor = () => ({ ...original("claude-code"), policy_coverage: "none" });
+    const { repo, mission, task } = await missionReady(session, "Ungated badge", { noVerify: true });
+    const refused = await session.api("POST", `/tasks/${task.id}/attempts`, {});
+    expect(refused.status).toBe(400);
+    expect(refused.body.error.code).toBe("invalid_argument");
+    expect(rows(session.plane, "SELECT id FROM attempts WHERE task_id = ?", task.id)).toHaveLength(0);
+    await session.api("PATCH", "/profiles/claude-default", { allow_ungated: true });
+    const started = await session.api("POST", `/tasks/${task.id}/attempts`, {});
+    expect(started.status, JSON.stringify(started.body)).toBe(201);
+    const done = await waitFor(async () => {
+      session.plane.tick();
+      const view = await session.api("GET", `/attempts/${started.body.id}`);
+      return view.body.state === "succeeded" ? view.body : null;
+    });
+    expect(done.gated).toBe("none");
+    expect(done.gated === "none" ? "ungated" : done.gated).toBe("ungated");
+    expect(done.warnings.map((item: { code: string }) => item.code)).toContain("ungated");
+    expect(mission.id).toBeTruthy();
+    rmSync(repo, { recursive: true, force: true });
+    await session.stop();
+  });
+
+  it("AC-F5-3.3 a restart keeps a pending approval, and a dead runtime cancels it", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agentos-approval-"));
+    const scenario = writeScenario({
+      stayAliveMs: 30000,
+      steps: [{ kind: "tool", name: "Bash", input: { command: "npm install lodash" } }],
+    });
+    const repo = initRepo();
+    const config = {
+      notifications: { desktop: false },
+      ui: { open_browser_on_start: false },
+      runtimes: {
+        "claude-code": { command: [process.execPath, FAKE_CLAUDE], scenario },
+        codex: { command: [process.execPath, FAKE_CODEX], scenario },
+      },
+    };
+    const first = ControlPlane.open({ home, config });
+    let attemptId = "";
+    let approvalId = "";
+    let expiresAt = "";
+    let pid = 0;
+    let gateToken = "";
+    await sessionApi(first, async (api) => {
+      await api("POST", "/repos", { path: repo, test_command: "node test.mjs" });
+      const mission = await api("POST", "/missions", { title: "Restart approval", repo, budget: "2" });
+      const task = await api("POST", `/missions/${mission.body.id}/tasks`, { title: "Work", no_verify: true });
+      await api("POST", `/missions/${mission.body.id}/start`);
+      const started = await api("POST", `/tasks/${task.body.id}/attempts`, {});
+      const approval = await waitFor(async () => {
+        const inbox = await api("GET", "/approvals?pending=1");
+        return inbox.body.approvals[0] ?? null;
+      });
+      const stored = rows(first, "SELECT state, expires_at FROM approvals WHERE id = ?", approval.id)[0];
+      expect(stored.state).toBe("pending");
+      attemptId = started.body.id;
+      approvalId = approval.id;
+      expiresAt = stored.expires_at;
+      gateToken = started.body.gate_token;
+      pid = Number((await api("GET", `/attempts/${attemptId}`)).body.pid);
+      first.close();
+    });
+    const second = ControlPlane.open({ home, config });
+    const kept = rows(second, "SELECT state, expires_at FROM approvals WHERE id = ?", approvalId)[0];
+    expect(kept.state).toBe("pending");
+    expect(kept.expires_at).toBe(expiresAt);
+    let secondId = "";
+    await sessionApi(second, async (api) => {
+      const same = {
+        hook_event_name: "PreToolUse",
+        tool_name: "Bash",
+        tool_input: { command: "npm install lodash" },
+        tool_use_id: "toolu_reattach",
+      };
+      const reattached = api("POST", `/gate/claude/${attemptId}`, same, { authorization: `Bearer ${gateToken}` });
+      await waitFor(async () => (rows(second, "SELECT COUNT(*) AS n FROM approvals WHERE attempt_id = ? AND input_hash = ?", attemptId, inputHash("Bash", same.tool_input))[0].n === 1 ? true : null));
+      expect(rows(second, "SELECT COUNT(*) AS n FROM approvals WHERE attempt_id = ?", attemptId)[0].n).toBe(1);
+      const allowed = await api("POST", `/approvals/${approvalId}/allow`, {});
+      expect(allowed.status).toBe(200);
+      const decision = await reattached;
+      expect(decision.status).toBe(200);
+      expect(decision.body.hookSpecificOutput.permissionDecision).toBe("allow");
+      const other = {
+        hook_event_name: "PreToolUse",
+        tool_name: "Bash",
+        tool_input: { command: "npm install left-pad" },
+        tool_use_id: "toolu_left",
+      };
+      const hanging = api("POST", `/gate/claude/${attemptId}`, other, { authorization: `Bearer ${gateToken}` });
+      const created = await waitFor(async () => {
+        const inbox = await api("GET", "/approvals?pending=1");
+        return inbox.body.approvals.find((row: { preview: string }) => row.preview.includes("left-pad")) ?? null;
+      });
+      secondId = created.id;
+      expect(rows(second, "SELECT state, expires_at FROM approvals WHERE id = ?", secondId)[0].state).toBe("pending");
+      process.kill(pid, "SIGKILL");
+      await waitFor(async () => {
+        try {
+          const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+          const state = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/)[0];
+          return state === "Z" || state === "X" ? true : null;
+        } catch {
+          return true;
+        }
+      });
+      second.close();
+      const ended = await hanging;
+      expect(ended.status).toBe(200);
+      expect(ended.body.hookSpecificOutput.permissionDecision).toBe("deny");
+    });
+    const third = ControlPlane.open({ home, config });
+    let seen = "";
+    const cancelled = await waitFor(async () => {
+      third.tick();
+      const row = third.db.prepare("SELECT state FROM approvals WHERE id = ?").get(secondId) as { state: string } | undefined;
+      const attempt = third.db.prepare("SELECT state, end_reason, pid FROM attempts WHERE id = ?").get(attemptId) as { state: string; end_reason: string | null; pid: number } | undefined;
+      seen = `${row?.state}/${attempt?.state}/${attempt?.end_reason}/${attempt?.pid}`;
+      return row?.state === "cancelled" ? row : null;
+    }).catch((error: Error) => {
+      throw new Error(`${error.message} seen=${seen}`);
+    });
+    expect(cancelled.state).toBe("cancelled");
+    third.close();
+    rmSync(home, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(scenario, { force: true });
+  });
+
+  it("AC-F11-1.3 tokens for an unpriced model stay stored and the cost stays unknown", async () => {
+    const scenario = writeScenario({
+      steps: [{ kind: "text", text: "no price" }],
+      total_cost_usd: null,
+      usage: { input_tokens: 40, output_tokens: 7, cache_read_input_tokens: 3, cache_creation_input_tokens: 1 },
+    });
+    const session = await boot({ scenario });
+    await session.api("PATCH", "/profiles/claude-default", { model: "no-such-model" });
+    const { repo, task } = await missionReady(session, "Unpriced", { noVerify: true });
+    const started = await session.api("POST", `/tasks/${task.id}/attempts`, {});
+    const done = await waitFor(async () => {
+      session.plane.tick();
+      const view = await session.api("GET", `/attempts/${started.body.id}`);
+      return view.body.state === "succeeded" ? view.body : null;
+    });
+    const usage = rows(session.plane, "SELECT * FROM usage WHERE attempt_id = ?", done.id);
+    expect(usage).toHaveLength(1);
+    expect(usage[0].model).toBe("no-such-model");
+    expect(usage[0].input_tokens).toBe(40);
+    expect(usage[0].output_tokens).toBe(7);
+    expect(usage[0].cache_read_tokens).toBe(3);
+    expect(usage[0].cost_nusd).toBeNull();
+    expect(usage[0].cost_source).toBe("unknown");
+    expect(done.cost).toBe("unknown");
+    expect(done.cost).not.toContain("0.00");
+    const doctor = await session.api("GET", "/doctor");
+    expect(doctor.body.lines.some((line: { name: string; detail: string }) => line.name === "price" && line.detail.includes("no-such-model"))).toBe(true);
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(scenario, { force: true });
+    await session.stop();
+  });
+
+  it("AC-F7-3.2 a 10MB transcript is ingested a chunk at a time", async () => {
+    const session = await boot();
+    const { repo, task } = await missionReady(session, "Big log", { noVerify: true });
+    const started = await session.api("POST", `/tasks/${task.id}/attempts`, {});
+    const done = await waitFor(async () => {
+      session.plane.tick();
+      const view = await session.api("GET", `/attempts/${started.body.id}`);
+      return view.body.state === "succeeded" ? view.body : null;
+    });
+    const log = join(session.home, "bulk.jsonl");
+    const line = `${JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: `BULK${"x".repeat(50_000)}` }] } })}\n`;
+    const repeats = Math.ceil((10 * 1024 * 1024) / Buffer.byteLength(line));
+    writeFileSync(log, "");
+    for (let i = 0; i < repeats; i++) writeFileSync(log, line, { flag: "a" });
+    const bytes = statSync(log).size;
+    expect(bytes).toBeGreaterThanOrEqual(10 * 1024 * 1024);
+    session.plane.db.prepare("UPDATE attempts SET log_path = ?, log_offset = 0 WHERE id = ?").run(log, done.id);
+    const before = rows(session.plane, "SELECT COUNT(*) AS n FROM events WHERE attempt_id = ? AND type = 'agent.message'", done.id)[0].n;
+    session.plane.ingest(done.id);
+    const offset = rows(session.plane, "SELECT log_offset FROM attempts WHERE id = ?", done.id)[0].log_offset;
+    expect(Number(offset)).toBe(bytes);
+    expect(rows(session.plane, "SELECT COUNT(*) AS n FROM events WHERE attempt_id = ? AND type = 'agent.message'", done.id)[0].n).toBe(before + repeats);
+    expect(session.plane.lastIngestHold).toBeGreaterThan(0);
+    expect(session.plane.lastIngestHold).toBeLessThan(256 * 1024);
+    const tail = `${JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "TAIL" }] } })}\n`;
+    writeFileSync(log, tail, { flag: "a" });
+    session.plane.ingest(done.id);
+    expect(Number(rows(session.plane, "SELECT log_offset FROM attempts WHERE id = ?", done.id)[0].log_offset)).toBe(bytes + Buffer.byteLength(tail));
+    expect(rows(session.plane, "SELECT COUNT(*) AS n FROM events WHERE attempt_id = ? AND type = 'agent.message'", done.id)[0].n).toBe(before + repeats + 1);
+    rmSync(repo, { recursive: true, force: true });
+    await session.stop();
+  });
+
+  it("AC-F15-2.3 eval missions are held out of prompts, skills, and CLAUDE.md", () => {
+    const dir = join(ROOT, "evals/missions");
+    const files = readdirSync(dir).filter((name) => name.endsWith(".json"));
+    expect(files.length).toBeGreaterThanOrEqual(5);
+    const ids = files.map((name) => JSON.parse(readFileSync(join(dir, name), "utf8")).id as string);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const name of files) {
+      expect(existsSync(join(ROOT, "fixtures", name))).toBe(false);
+      expect(existsSync(join(ROOT, "fixtures/scenarios", name))).toBe(false);
+    }
+    const texts: string[] = [];
+    const walk = (path: string) => {
+      if (!existsSync(path)) return;
+      if (statSync(path).isDirectory()) {
+        for (const entry of readdirSync(path)) walk(join(path, entry));
+        return;
+      }
+      texts.push(readFileSync(path, "utf8"));
+    };
+    walk(join(ROOT, "CLAUDE.md"));
+    walk(join(ROOT, "AGENTS.md"));
+    walk(join(ROOT, "docs/DAY1-PROMPT.md"));
+    walk(join(ROOT, ".claude"));
+    const blob = texts.join("\n");
+    expect(blob).not.toContain("evals/missions");
+    for (const id of ids) expect(blob).not.toContain(id);
+    const contract = readFileSync(join(ROOT, "packages/adapter-api/contract/contract.test.ts"), "utf8");
+    expect(contract).not.toContain("evals/missions");
+    for (const id of ids) expect(contract).not.toContain(id);
+  });
+});
+
 function readlink(pid: number): string {
   return spawnSync("readlink", ["-f", `/proc/${pid}/cwd`], { encoding: "utf8" }).stdout.trim();
 }
@@ -1110,10 +1349,15 @@ async function sessionApi(plane: ControlPlane, fn: (api: (method: string, path: 
   const port = typeof address === "object" && address ? address.port : 0;
   plane.port = port;
   const token = plane.token();
-  const api = async (method: string, path: string, body?: unknown) => {
+  const api = async (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) => {
     const response = await fetch(`http://127.0.0.1:${port}${path}`, {
       method,
-      headers: { authorization: `Bearer ${token}`, connection: "close", ...(body !== undefined ? { "content-type": "application/json" } : {}) },
+      headers: {
+        authorization: `Bearer ${token}`,
+        connection: "close",
+        ...(body !== undefined ? { "content-type": "application/json" } : {}),
+        ...headers,
+      },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     const text = await response.text();

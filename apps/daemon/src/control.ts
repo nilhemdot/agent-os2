@@ -120,6 +120,9 @@ export class ControlPlane {
   private exiting = new Set<string>();
   private policyHash = "";
   private priceTable: { version: string; models: Record<string, any> } = { version: "unpriced", models: {} };
+  /** Largest buffer held while tailing one transcript. Tests use this to prove ingest is chunked. */
+  lastIngestHold = 0;
+  capabilitiesFor = (runtime: string) => (runtime === "codex" ? codexCapabilities() : claudeCapabilities());
 
   private constructor(opts: PlaneOptions, db: DatabaseSync) {
     this.home = opts.home;
@@ -183,6 +186,7 @@ export class ControlPlane {
         this.nextHeartbeat.set(attempt.id, this.clock.now());
         continue;
       }
+      this.cancelPendingApprovals(attempt.id, attempt.state === "starting" || attempt.state === "queued" ? "failed" : "lost");
       if (attempt.state === "starting" || attempt.state === "queued") this.finishAttempt(attempt.id, "failed", "process gone", null, null);
       else this.finishLost(attempt.id);
     }
@@ -911,7 +915,7 @@ export class ControlPlane {
     const running = Number(this.one("SELECT COUNT(*) AS n FROM attempts WHERE state IN ('starting','running','waiting_approval')")?.n ?? 0);
     const seq = Number(this.one("SELECT COALESCE(MAX(seq), 0) AS n FROM attempts WHERE task_id = ?", task.id)?.n ?? 0) + 1;
     const id = ulid(this.clock.now());
-    const capabilities = profile.runtime === "codex" ? codexCapabilities() : claudeCapabilities();
+    const capabilities = this.capabilitiesFor(profile.runtime);
     let gated = capabilities.policy_coverage;
     if (gated === "none" && !profile.allow_ungated) {
       throw new AgentError("invalid_argument", "Ungated runtimes require allow_ungated on the profile", 400);
@@ -1249,27 +1253,47 @@ export class ControlPlane {
       const size = fstatSync(fd).size;
       const offset = Number(attempt.log_offset ?? 0);
       if (size <= offset) return;
-      const buf = Buffer.alloc(size - offset);
-      readSync(fd, buf, 0, buf.length, offset);
-      const text = buf.toString("utf8");
-      const end = text.endsWith("\n") ? text.length : text.lastIndexOf("\n") + 1;
-      if (end <= 0) return;
-      const chunk = text.slice(0, end);
+      const chunkSize = 64 * 1024;
+      const chunk = Buffer.alloc(chunkSize);
+      let carry = Buffer.alloc(0);
+      let pos = offset;
       let cursor = offset;
+      let hold = 0;
       const task = this.one("SELECT * FROM tasks WHERE id = ?", attempt.task_id);
-      const lines = chunk.split("\n");
-      for (let index = 0; index < lines.length; index++) {
-        const line = lines[index] ?? "";
-        if (index === lines.length - 1 && line === "") break;
-        const events = attempt.runtime === "claude-code" ? parseClaudeLine(line, cursor) : [];
-        if (attempt.runtime !== "claude-code") {
-          const parsed = parseCodexLine(line);
-          if (parsed?.event) events.push({ ...parsed.event, byteOffset: cursor });
+      const take = (buf: Buffer) => {
+        let start = 0;
+        for (let i = 0; i < buf.length; i++) {
+          if (buf[i] !== 10) continue;
+          const line = buf.subarray(start, i).toString("utf8");
+          const at = cursor;
+          cursor += i - start + 1;
+          start = i + 1;
+          const events = attempt.runtime === "claude-code" ? parseClaudeLine(line, at) : [];
+          if (attempt.runtime !== "claude-code") {
+            const parsed = parseCodexLine(line);
+            if (parsed?.event) events.push({ ...parsed.event, byteOffset: at });
+          }
+          for (const event of events) this.recordRuntimeEvent(attempt, event.type, event.payload, event.raw, task);
         }
-        for (const event of events) this.recordRuntimeEvent(attempt, event.type, event.payload, event.raw, task);
-        cursor += Buffer.byteLength(line) + 1;
+      };
+      while (pos < size) {
+        const n = readSync(fd, chunk, 0, Math.min(chunkSize, size - pos), pos);
+        if (n <= 0) break;
+        pos += n;
+        const piece = chunk.subarray(0, n);
+        const data = carry.length ? Buffer.concat([carry, piece]) : piece;
+        hold = Math.max(hold, data.length);
+        let lastNl = -1;
+        for (let i = 0; i < data.length; i++) if (data[i] === 10) lastNl = i;
+        if (lastNl < 0) {
+          carry = Buffer.from(data);
+          continue;
+        }
+        take(data.subarray(0, lastNl + 1));
+        carry = Buffer.from(data.subarray(lastNl + 1));
       }
-      this.run("UPDATE attempts SET log_offset = ? WHERE id = ?", cursor, attemptId);
+      this.lastIngestHold = hold;
+      if (cursor !== offset) this.run("UPDATE attempts SET log_offset = ? WHERE id = ?", cursor, attemptId);
     } finally {
       closeSync(fd);
     }
@@ -1720,46 +1744,60 @@ export class ControlPlane {
     if (!attempt || ["succeeded", "failed", "cancelled", "lost", "budget_stopped"].includes(attempt.state)) return;
     this.finishing.add(id);
     const task = this.one("SELECT * FROM tasks WHERE id = ?", attempt.task_id)!;
-    this.tx(() => {
-      const target = terminal;
-      if (attempt.state === "waiting_approval" || attempt.state === "running" || attempt.state === "starting" || attempt.state === "queued") {
-        this.run(
-          "UPDATE attempts SET state = ?, end_reason = ?, exit_code = ?, exit_signal = ?, ended_at = ? WHERE id = ?",
-          target,
-          reason,
-          code,
-          signal,
-          this.nowIso(),
-          id,
-        );
-        this.emit(target === "budget_stopped" ? "attempt.budget_stopped" : target === "cancelled" ? "attempt.cancelled" : "attempt.exited", {
-          missionId: task.mission_id,
-          taskId: task.id,
-          attemptId: id,
-          actor: "daemon",
-        }, { exit_code: code, signal, reason, subtype: reason });
+    try {
+      this.tx(() => {
+        const target = terminal;
+        if (attempt.state === "waiting_approval" || attempt.state === "running" || attempt.state === "starting" || attempt.state === "queued") {
+          this.run(
+            "UPDATE attempts SET state = ?, end_reason = ?, exit_code = ?, exit_signal = ?, ended_at = ? WHERE id = ?",
+            target,
+            reason,
+            code,
+            signal,
+            this.nowIso(),
+            id,
+          );
+          this.emit(target === "budget_stopped" ? "attempt.budget_stopped" : target === "cancelled" ? "attempt.cancelled" : "attempt.exited", {
+            missionId: task.mission_id,
+            taskId: task.id,
+            attemptId: id,
+            actor: "daemon",
+          }, { exit_code: code, signal, reason, subtype: reason });
+        }
+        this.cancelPendingApprovals(id, terminal);
+        if (attempt.workspace_id) this.releaseWorkspaceRow(attempt.workspace_id);
+      });
+      try {
+        this.captureEvidence(id);
+      } catch (error) {
+        this.log(`evidence failed ${id}: ${error instanceof Error ? error.message : error}`);
       }
-      this.run("UPDATE approvals SET state = 'cancelled' WHERE attempt_id = ? AND state = 'pending'", id);
-      for (const approval of this.all("SELECT id FROM approvals WHERE attempt_id = ? AND state = 'cancelled'", id)) {
+      if (terminal === "succeeded") void this.afterSuccess(id);
+      else if (terminal === "failed" || terminal === "cancelled" || terminal === "budget_stopped") {
+        const current = this.one("SELECT state FROM tasks WHERE id = ?", task.id);
+        if (current && !["passed", "cancelled", "failed"].includes(current.state)) this.setTask(task.id, "failed");
+      }
+    } finally {
+      this.finishing.delete(id);
+    }
+  }
+
+  private cancelPendingApprovals(attemptId: string, terminal: string): void {
+    const pending = this.all("SELECT id FROM approvals WHERE attempt_id = ? AND state = 'pending'", attemptId);
+    if (!pending.length) return;
+    const task = this.one("SELECT t.* FROM tasks t JOIN attempts a ON a.task_id = t.id WHERE a.id = ?", attemptId);
+    const write = () => {
+      this.run("UPDATE approvals SET state = 'cancelled' WHERE attempt_id = ? AND state = 'pending'", attemptId);
+      for (const approval of pending) {
         this.releaseApproval(approval.id, {
           effect: terminal === "cancelled" ? "cancel" : "deny",
           reason: terminal === "cancelled" ? "attempt cancelled" : "attempt ended",
         });
-        this.emit("approval.cancelled", { attemptId: id, taskId: task.id, missionId: task.mission_id, actor: "daemon" }, { id: approval.id });
+        this.emit("approval.cancelled", { attemptId, taskId: task?.id, missionId: task?.mission_id, actor: "daemon" }, { id: approval.id });
       }
-      if (attempt.workspace_id) this.releaseWorkspaceRow(attempt.workspace_id);
-    });
-    try {
-      this.captureEvidence(id);
-    } catch (error) {
-      this.log(`evidence failed ${id}: ${error instanceof Error ? error.message : error}`);
-    }
-    if (terminal === "succeeded") void this.afterSuccess(id);
-    else if (terminal === "failed" || terminal === "cancelled" || terminal === "budget_stopped") {
-      const current = this.one("SELECT state FROM tasks WHERE id = ?", task.id);
-      if (current && !["passed", "cancelled", "failed"].includes(current.state)) this.setTask(task.id, "failed");
-    }
-    this.finishing.delete(id);
+    };
+    if (this.inTx) write();
+    else this.tx(write);
   }
 
   private finishLost(id: string): void {

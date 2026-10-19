@@ -166,12 +166,17 @@ for (const step of script.steps || []) {
 if (script.stayAliveMs) await new Promise((r) => setTimeout(r, script.stayAliveMs));
 
 const usage = script.usage || { input_tokens: 12, output_tokens: 6, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
-emit({
+const result = {
   type: "result",
   subtype: script.resultSubtype || "success",
-  total_cost_usd: script.total_cost_usd ?? 0.001,
   usage,
   num_turns: toolSeq || 1,
   duration_ms: script.duration_ms ?? 20,
-});
+};
+if (Object.prototype.hasOwnProperty.call(script, "total_cost_usd")) {
+  if (script.total_cost_usd != null) result.total_cost_usd = script.total_cost_usd;
+} else {
+  result.total_cost_usd = 0.001;
+}
+emit(result);
 process.exit(script.exitCode ?? 0);

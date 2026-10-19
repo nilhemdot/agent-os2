@@ -1,6 +1,6 @@
 # Test report
 
-Run on Linux, Node v22.14.0. This pass ran `npx vitest run` and a full `npx vitest run --coverage`. Both finished with 71 passed, 0 failed, 0 skipped. The coverage run included the two-worktree test (AC-F3-1.1, AC-F3-1.2, AC-F3-3.1) and did not hit `ECONNRESET`.
+Run on Linux, Node v22.14.0. This pass ran `npx vitest run` and a full `npx vitest run --coverage`. Both finished with 76 passed, 0 failed, 0 skipped. The coverage run included the two-worktree test (AC-F3-1.1, AC-F3-1.2, AC-F3-3.1) and did not hit `ECONNRESET`.
 
 ## How to run
 
@@ -16,15 +16,15 @@ Vitest uses one worker. A daemon is started in-process on an ephemeral port, exc
 
 | Suite | Passed | Failed | Skipped | Not run |
 | --- | ---: | ---: | ---: | ---: |
-| vitest (`npx vitest run`, repeated under `--coverage`) | 71 | 0 | 0 | 0 |
+| vitest (`npx vitest run`, repeated under `--coverage`) | 76 | 0 | 0 | 0 |
 | Playwright (`npm run test:ui`) | — | — | — | 1 (not re-run; UI unchanged) |
 | Live Claude Code checks L1–L9 | 0 | 0 | 0 | 9 |
 | Live Codex checks C1–C7 | 0 | 0 | 0 | 7 |
 | Live eval of `evals/missions` on real Claude Code | 0 | 0 | 0 | 1 |
 
-Automated tests that ran this pass: **71 passed, 0 failed, 0 skipped**.
+Automated tests that ran this pass: **76 passed, 0 failed, 0 skipped**.
 
-Spec acceptance ids: **197**. **172 PASS**, **25 GAP** (no automated test cites the id). None of the automated tests failed. GAP is not a claim that the behavior is missing from the code.
+Spec acceptance ids: **197**. **178 PASS**, **19 GAP** (no automated test cites the id). None of the automated tests failed. GAP is not a claim that the behavior is missing from the code.
 
 ## Coverage
 
@@ -32,9 +32,9 @@ Full `npx vitest run --coverage` (v8), exit 0, from `coverage/coverage-summary.j
 
 | | Statements | Branches | Functions | Lines |
 | --- | ---: | ---: | ---: | ---: |
-| All files | 82.64% | 75.65% | 91.19% | 82.64% |
+| All files | 82.91% | 76.49% | 91.31% | 82.91% |
 
-4120 of 4985 statements. `apps/daemon/src/control.ts` is 94.34% statements. `packages/adapter-codex/src/index.ts` is 94.64% lines.
+4163 of 5021 statements. `apps/daemon/src/control.ts` is 94.70% statements (2378 of 2511). `packages/adapter-codex/src/index.ts` is 94.64% lines.
 
 The CLI (`apps/cli/src/main.ts`) and the daemon entrypoint (`apps/daemon/src/main.ts`) stay at 0% because those processes are spawned outside the vitest collector. AC-F1-1.1, AC-F1-1.2, AC-F1-1.3, AC-F1-2.3, and AC-F4-4.1 still drive the real CLI. The React UI is not in the v8 number.
 
@@ -119,14 +119,14 @@ The CLI (`apps/cli/src/main.ts`) and the daemon entrypoint (`apps/daemon/src/mai
 | AC-F5-1.1 | PASS | tests/acceptance.test.ts |
 | AC-F5-1.2 | PASS | tests/gaps.test.ts |
 | AC-F5-1.3 | PASS | tests/acceptance.test.ts |
-| AC-F5-1.4 | GAP | no automated test |
+| AC-F5-1.4 | PASS | tests/gaps.test.ts |
 | AC-F5-2.1 | PASS | tests/acceptance.test.ts |
 | AC-F5-2.2 | PASS | tests/gaps.test.ts |
 | AC-F5-2.3 | PASS | tests/gaps.test.ts |
 | AC-F5-2.4 | PASS | tests/gaps.test.ts |
 | AC-F5-3.1 | PASS | tests/gaps.test.ts |
 | AC-F5-3.2 | PASS | tests/gaps.test.ts |
-| AC-F5-3.3 | GAP | no automated test |
+| AC-F5-3.3 | PASS | tests/gaps.test.ts |
 | AC-F5-4.1 | PASS | tests/gaps.test.ts |
 | AC-F5-4.2 | PASS | tests/gaps.test.ts |
 | AC-F5-5.1 | PASS | tests/gaps.test.ts |
@@ -138,7 +138,7 @@ The CLI (`apps/cli/src/main.ts`) and the daemon entrypoint (`apps/daemon/src/mai
 | AC-F6-2.1 | PASS | packages/adapter-api/contract/contract.test.ts |
 | AC-F6-2.2 | PASS | packages/adapter-api/contract/contract.test.ts |
 | AC-F6-2.3 | PASS | tests/gaps.test.ts |
-| AC-F6-2.4 | GAP | no automated test |
+| AC-F6-2.4 | PASS | tests/gaps.test.ts — capabilities override. Neither shipped adapter reports `policy_coverage: none`. |
 | AC-F6-3.1 | PASS | tests/gaps.test.ts |
 | AC-F6-3.2 | PASS | tests/acceptance.test.ts |
 | AC-F6-3.3 | PASS | tests/gaps.test.ts |
@@ -155,7 +155,7 @@ The CLI (`apps/cli/src/main.ts`) and the daemon entrypoint (`apps/daemon/src/mai
 | AC-F7-2.6 | PASS | tests/acceptance.test.ts |
 | AC-F7-2.7 | GAP | no automated test |
 | AC-F7-3.1 | PASS | tests/gaps.test.ts |
-| AC-F7-3.2 | GAP | no automated test |
+| AC-F7-3.2 | PASS | tests/gaps.test.ts |
 | AC-F7-3.3 | PASS | tests/acceptance.test.ts |
 | AC-F7-4.1 | PASS | tests/gaps.test.ts |
 | AC-F7-4.2 | PASS | tests/gaps.test.ts |
@@ -193,7 +193,7 @@ The CLI (`apps/cli/src/main.ts`) and the daemon entrypoint (`apps/daemon/src/mai
 | AC-F10-4.1 | PASS | tests/gaps.test.ts |
 | AC-F11-1.1 | PASS | tests/gaps.test.ts |
 | AC-F11-1.2 | PASS | tests/gaps.test.ts |
-| AC-F11-1.3 | GAP | no automated test |
+| AC-F11-1.3 | PASS | tests/gaps.test.ts |
 | AC-F11-1.4 | PASS | tests/gaps.test.ts |
 | AC-F11-1.5 | PASS | tests/gaps.test.ts — The bundled table ships no models (`version: unpriced`), so every shipped entry has `source_url` and `retrieved_on`. The test also loads an override entry and checks those two fields. |
 | AC-F11-2.1 | PASS | tests/gaps.test.ts |
@@ -241,7 +241,7 @@ The CLI (`apps/cli/src/main.ts`) and the daemon entrypoint (`apps/daemon/src/mai
 | AC-F15-1.6 | GAP | no automated test |
 | AC-F15-2.1 | PASS | tests/acceptance.test.ts |
 | AC-F15-2.2 | PASS | tests/acceptance.test.ts |
-| AC-F15-2.3 | GAP | no automated test |
+| AC-F15-2.3 | PASS | tests/gaps.test.ts |
 | AC-F15-3.1 | GAP | no automated test |
 
 ## Live checks still outstanding
@@ -264,17 +264,20 @@ Do not read a fake-runtime pass as a live pass. The fakes implement the shapes t
 - Opening a corrupt database threw the raw SQLite error from a later pragma. That path is now `db_corrupt` and names the backup in the data directory.
 - A late Codex stdout chunk after the data directory was removed threw `ENOENT` on the test process. Log appends ignore a missing file.
 - The two-worktree coverage reset is covered by swallowing child pipe errors, signalling a process group only when the child is its own group leader, closing HTTP connections instead of pooling them, and retrying a reset fetch. The full coverage run completed.
+- Transcript ingest allocated one buffer for the whole unread tail. It now reads 64KB chunks and keeps only the unfinished line. A log over 10MB is ingested, and the largest buffer held in that call stays under 256KB.
+- A daemon restart with a dead runtime cancelled the pending approval only after an async log ingest. That cancel now happens when the daemon opens and sees the process is gone. Under coverage the async path had left the approval pending.
+- The fake Claude runtime turned a JSON `null` cost into `0.001`. An explicit null is now omitted, so a model with tokens and no price can be stored as `unknown`.
 
 ## Known gaps
 
-25 acceptance ids have no automated test. They are the ones marked GAP above. The ones left out on purpose:
+19 acceptance ids have no automated test. They are the ones marked GAP above. The ones left out on purpose:
 
 - AC-F3-1.3 and AC-F3-2.4. A workspace path that equals the main checkout is already rejected as `path_overlap`, and branch allocation skips names that exist, so `main_checkout_forbidden` and `branch_in_use` are not reached by the current checks.
-- AC-F6-2.4. Codex is `escalated`, not `policy_coverage: none`. The ungated fallback test does not start an adapter whose coverage is none.
+- AC-F6-1.2. The adapter contract tests check capability flags and spawn arguments. They do not drive a fake Claude session and a fake Codex session through the same contract.
+- AC-F7-2.3. An allow response under 50ms at p95 was not stamped. Coverage instrumentation moves that number around, and a timing assert would flake.
 - AC-F7-2.7 and the live checks. Subagent hooks and real Claude Code / Codex behavior are not faked.
-- AC-F11-1.3. A model with tokens and no price row is not what the "no usage" test covers. That test checks a finished attempt with no usage rows, which labels cost `unknown`.
-- AC-F13 except AC-F13-5.1. The Mission Control screens beyond the one smoke path have no browser test. Playwright was not re-run this pass.
-- AC-F15-1.5 is document-only. AC-F15-1.6, AC-F15-2.3, and AC-F15-3.1 need a PR description, a held-out-eval audit, or a timed fresh-clone run.
+- AC-F11-2.2, AC-F12-3.1, and AC-F13 except AC-F13-5.1. Those are Mission Control screens. Playwright was not re-run this pass. AC-F11-1.3 asserts the cost string the UI prints (`unknown`), not a browser session.
+- AC-F15-1.5 is document-only. AC-F15-1.6 needs a PR description. AC-F15-3.1 needs `scripts/e2e-smoke.sh` to run the fake runtime itself. That script only launches Playwright, and it exits 0 when Chromium is missing.
 
 The shipped price table is empty (`version: unpriced`). Missing models are cost `unknown`, not `$0.00`. No prices were invented.
 
