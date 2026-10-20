@@ -1,0 +1,33 @@
+node_modules/
+dist/
+*.log
+.survey-tmp/
+survey-output/
+run-*.log
+packages/extension/run-*.log
+
+# fixtures intentionally contain Claude local settings; override any global ignore of this file name
+!fixtures/**/.claude/settings.local.json
+e2e-*.log
+packages/extension/e2e-*.log
+# the CLI single-file bundle is a committed build artifact: the GitHub Action runs it
+!packages/cli/dist/
+packages/cli/dist/*
+!packages/cli/dist/tripwire.mjs
+
+# never commit: packaged extensions, editor test downloads and profiles, test output, secrets, OS junk
+*.vsix
+.vscode-test/
+test-output/
+dist-test/
+.env
+.env.*
+!.env.example
+qa/results/
+.demo-bad/
+docs/demand-test/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.tmp
+tmp/

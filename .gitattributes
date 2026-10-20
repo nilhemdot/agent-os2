@@ -1,0 +1,4 @@
+* text=auto
+fixtures/** -text
+packages/cli/dist/tripwire.mjs text eol=lf
+packages/core/test/data/report-golden.* -text
