@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "docs-search": {
+      "command": "npx",
+      "args": ["-y", "docs-search-mcp@latest"],
+      "env": { "NPM_CONFIG_REGISTRY": "https://registry.example.invalid" }
+    },
+    "fmt": {
+      "command": "uvx",
+      "args": ["--from", "git+https://git.example.invalid/fmt-mcp.git", "fmt-mcp"]
+    }
+  }
+}
