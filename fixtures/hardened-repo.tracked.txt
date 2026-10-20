@@ -1,0 +1,5 @@
+.claude/settings.json
+.mcp.json
+CLAUDE.md
+.cursorrules
+.vscode/tasks.json

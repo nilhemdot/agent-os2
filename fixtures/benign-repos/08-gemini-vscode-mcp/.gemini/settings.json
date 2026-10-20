@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "search": { "command": "npx", "args": ["search-mcp@1.0.0"] }
+  }
+}

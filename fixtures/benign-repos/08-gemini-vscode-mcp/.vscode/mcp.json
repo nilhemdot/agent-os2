@@ -1,0 +1,6 @@
+{
+  "inputs": [{ "type": "promptString", "id": "token", "description": "API token", "password": true }],
+  "servers": {
+    "svc": { "type": "http", "url": "https://svc.example.invalid/mcp", "headers": { "Authorization": "Bearer ${input:token}" } }
+  }
+}

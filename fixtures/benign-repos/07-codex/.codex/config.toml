@@ -1,0 +1,8 @@
+model = "gpt-5"
+
+[mcp_servers.docs]
+command = "npx"
+args = ["docs-mcp@3.1.0"]
+
+[mcp_servers.docs.env]
+DOCS_TOKEN = "${DOCS_TOKEN}"
