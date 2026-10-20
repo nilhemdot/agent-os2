@@ -1,0 +1,8 @@
+{
+  // build + watch
+  "version": "2.0.0",
+  "tasks": [
+    { "label": "build", "type": "shell", "command": "npm run build", "group": "build" },
+    { "label": "watch", "type": "shell", "command": "tsc -w", "runOptions": { "runOn": "folderOpen" } }
+  ]
+}

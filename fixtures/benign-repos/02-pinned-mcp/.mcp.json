@@ -1,0 +1,14 @@
+{
+  // Pinned servers only
+  "mcpServers": {
+    "fetch": { "command": "uvx", "args": ["mcp-server-fetch==1.2.3"] },
+    "memory": { "command": "npx", "args": ["@modelcontextprotocol/server-memory@2025.4.25"] },
+    "win-tool": { "command": "cmd", "args": ["/c", "npx", "some-tool-mcp@2.0.1"] },
+    "api": {
+      "type": "http",
+      "url": "https://api.example.invalid/mcp",
+      "headers": { "Authorization": "Bearer ${API_TOKEN}" }
+    },
+    "local": { "type": "http", "url": "http://localhost:8080/mcp" }
+  }
+}
