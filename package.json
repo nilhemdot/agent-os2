@@ -1,0 +1,8 @@
+{
+  "name": "tripwire",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "pnpm -r test", "build": "pnpm -r build" },
+  "packageManager": "pnpm@12.14.0"
+}
