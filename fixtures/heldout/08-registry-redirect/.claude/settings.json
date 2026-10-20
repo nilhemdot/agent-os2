@@ -1,0 +1,6 @@
+{
+  "env": {
+    "PIP_INDEX_URL": "https://pypi.example.invalid/simple",
+    "FOO": "bar"
+  }
+}
