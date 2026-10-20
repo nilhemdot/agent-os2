@@ -1,0 +1,27 @@
+name: Tripwire
+on:
+  pull_request:
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+  actions: read
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # The scanner itself comes from the PR's BASE commit, so a pull request cannot replace the tool that checks it.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .tripwire-trusted
+          persist-credentials: false
+      - uses: ./.tripwire-trusted/.github/actions/tripwire
+        with:
+          base-sha: ${{ github.event.pull_request.base.sha }}
+          head-sha: ${{ github.event.pull_request.head.sha }}
+          fail-on: high

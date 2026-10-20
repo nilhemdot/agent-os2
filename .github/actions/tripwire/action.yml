@@ -1,0 +1,102 @@
+name: Tripwire PR diff
+description: Scan introduced or worsened agent configuration findings
+inputs:
+  base-sha:
+    required: true
+    description: PR base commit
+  head-sha:
+    required: true
+    description: PR head commit
+  fail-on:
+    required: false
+    default: high
+    description: Minimum failing severity
+  baseline:
+    required: false
+    default: ''
+    description: Optional baseline file path. A path inside the repository is read from the BASE revision, never from the PR head
+  repo-config:
+    required: false
+    default: base
+    description: "base (default) reads .tripwire.json from the PR base revision; none ignores repository configuration entirely (--no-repo-config)"
+  report:
+    required: false
+    default: 'false'
+    description: Build and attach an HTML report as a workflow artifact
+  github-token:
+    required: false
+    default: ${{ github.token }}
+    description: Token for one PR comment; fork PRs skip comments
+runs:
+  using: composite
+  steps:
+    - name: Scan PR diff
+      id: scan
+      shell: bash
+      env:
+        TRIPWIRE_BASE: ${{ inputs.base-sha }}
+        TRIPWIRE_HEAD: ${{ inputs.head-sha }}
+        TRIPWIRE_FAIL_ON: ${{ inputs.fail-on }}
+        TRIPWIRE_BASELINE: ${{ inputs.baseline }}
+        TRIPWIRE_REPO_CONFIG: ${{ inputs.repo-config }}
+      run: |
+        args=(diff --repo . "$TRIPWIRE_BASE" "$TRIPWIRE_HEAD" --sarif out.sarif --json out.json --fail-on "$TRIPWIRE_FAIL_ON")
+        if [[ -n "$TRIPWIRE_BASELINE" ]]; then args+=(--baseline "$TRIPWIRE_BASELINE"); fi
+        case "$TRIPWIRE_REPO_CONFIG" in
+          base) ;;  # diff reads configuration from the base revision by default: a PR cannot suppress its own findings
+          none) args+=(--no-repo-config) ;;
+          *) echo "repo-config must be 'base' or 'none'" >&2; exit 2 ;;
+        esac
+        set +e
+        # The CLI is the action's own copy (checked out from a trusted ref), never a file from the PR under test. Only `diff` is used.
+        node "$GITHUB_ACTION_PATH/../../../packages/cli/dist/tripwire.mjs" "${args[@]}"
+        result=$?
+        set -e
+        echo "exit_code=$result" >> "$GITHUB_OUTPUT"
+    - name: Verify lock against the PR base
+      shell: bash
+      env:
+        TRIPWIRE_BASE: ${{ inputs.base-sha }}
+      run: |
+        if git cat-file -e "$TRIPWIRE_BASE:.tripwire.lock" 2>/dev/null; then
+          node "$GITHUB_ACTION_PATH/../../../packages/cli/dist/tripwire.mjs" verify . --lock-from "$TRIPWIRE_BASE" --no-repo-config
+        else
+          echo "No lock at the base revision; lock check skipped."
+        fi
+    - name: Build report
+      if: ${{ always() && inputs.report == 'true' }}
+      shell: bash
+      run: node "$GITHUB_ACTION_PATH/../../../packages/cli/dist/tripwire.mjs" report . --format html --out tripwire-report.html --force
+    - name: Attach report
+      if: ${{ always() && inputs.report == 'true' }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: tripwire-report
+        path: tripwire-report.html
+        if-no-files-found: error
+    - name: Annotate changed files
+      if: ${{ always() && steps.scan.outputs.exit_code != '2' }}
+      shell: bash
+      run: node "$GITHUB_ACTION_PATH/annotate.mjs" out.json
+    - name: Upload SARIF
+      # Needs code scanning (public repositories, or private ones with GitHub Advanced Security). Where it is unavailable the upload fails;
+      # that must not change the check result, which comes from the scan itself (see "Preserve CLI status"). Annotations above work everywhere.
+      continue-on-error: true
+      if: ${{ always() && steps.scan.outputs.exit_code != '2' }}
+      uses: github/codeql-action/upload-sarif@e8e594e8799b6bc05d33c13d3d14e484b7b9cbc0 # v3.29.4
+      with:
+        sarif_file: out.sarif
+    - name: Update PR comment
+      if: ${{ always() && steps.scan.outputs.exit_code != '2' && github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork }}
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: node "$GITHUB_ACTION_PATH/comment.mjs" out.json
+    - name: Preserve CLI status
+      if: ${{ always() && steps.scan.outputs.exit_code != '0' }}
+      shell: bash
+      env:
+        SCAN_EXIT: ${{ steps.scan.outputs.exit_code }}
+      run: exit "${SCAN_EXIT:-2}"
